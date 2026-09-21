@@ -1,6 +1,6 @@
 # 课程表 · CourseTable
 
-一个 Qt 6 / QML 写的大学课程表 app。现在在桌面上跑，最终目标是打包成 Android 应用。
+一个 Qt 6 / QML 写的大学课程表 app。现在在桌面上跑，最终目标是打包成 Android 应用。Ai制作
 
 ![主界面](shots/a-normal.png)
 
