@@ -1,0 +1,16 @@
+# 构建产物：build/ 里有 windeployqt 拷进来的 Qt 运行库和 exe，
+# 好几十 MB，而且都是能重新生成的，别进仓库。
+build/
+
+# 截图脚本的中间产物
+shots/_*
+
+# Qt Creator / clangd / VS 的本地配置
+CMakeLists.txt.user*
+.qtc_clangd/
+.vscode/
+.cache/
+
+# 系统垃圾
+Thumbs.db
+.DS_Store
