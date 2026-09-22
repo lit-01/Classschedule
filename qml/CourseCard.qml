@@ -8,7 +8,7 @@ Rectangle {
     property string courseName: ""
     property string courseTeacher: ""
     property string courseRoom: ""
-    property string courseWeek: "" // 空字符串 = 表里没给周次，不显示这一行
+    property string courseCategory: "" // 理论 / 实验 / 上机 / 实践
     property color cardColor: "#FFFFFF"
     property bool editable: false
     property bool grayDay: false
@@ -23,8 +23,6 @@ Rectangle {
                                                 : (deepBg ? "#0D2B24" : "#263238")
     readonly property color subColor: grayDay ? "#7C7C7C"
                                                : (deepBg ? "#173D32" : "#455A64")
-    readonly property color weekColor: grayDay ? "#868686"
-                                                : (deepBg ? "#1B463A" : "#546E7A")
 
     radius: 6
     color: grayDay ? "#C7C7C7" : cardColor
@@ -54,10 +52,18 @@ Rectangle {
             maximumLineCount: 3
         }
 
+        // 类别和老师挤一行 —— 卡片本来就只有几行，再多一行就挤了
         Text {
             width: parent.width
-            visible: card.courseTeacher.length > 0
-            text: card.courseTeacher
+            visible: text.length > 0
+            text: {
+                const parts = []
+                if (card.courseCategory.length > 0)
+                    parts.push(card.courseCategory)
+                if (card.courseTeacher.length > 0)
+                    parts.push(card.courseTeacher)
+                return parts.join("·")
+            }
             color: card.subColor
             font.pixelSize: 8
             elide: Text.ElideRight
@@ -69,16 +75,6 @@ Rectangle {
             visible: card.courseRoom.length > 0
             text: card.courseRoom
             color: card.subColor
-            font.pixelSize: 8
-            elide: Text.ElideRight
-            maximumLineCount: 1
-        }
-
-        Text {
-            width: parent.width
-            visible: card.courseWeek.length > 0
-            text: card.courseWeek
-            color: card.weekColor
             font.pixelSize: 8
             elide: Text.ElideRight
             maximumLineCount: 1

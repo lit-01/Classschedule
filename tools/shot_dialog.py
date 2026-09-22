@@ -1,12 +1,18 @@
-"""抓「->」导课对话框。
+"""从外面按屏幕坐标抓一个弹窗，存成 PNG。
 
-为什么要单独一个脚本：对话框（哪怕关了原生、用 Qt 自己的）也是**独立顶层窗口**，
-QQuickWindow::grabWindow() 只抓主窗口，框里是空的。
-所以这里从外面按屏幕坐标抓：先 EnumWindows 找到这个进程的对话框窗口，取它的
-rect，再 ImageGrab 抓那块。
+用法：
+    python tools/shot_dialog.py <actionName> <输出.png> [KEY=VAL ...]
 
-用法：python tools/shot_dialog.py
-输出：CourseTable/shots/f-import.png
+例：
+    python tools/shot_dialog.py importNote shots/h-importnote.png ^
+        COURSETABLE_AUTOIMPORT="E:\\表格\\蒲亨林(2026-2027-1)课表.pdf"
+
+为什么要单独一个脚本：弹窗（就算是关了原生、用 Qt 自己那套）也是**独立顶层
+窗口**，QQuickWindow::grabWindow() 只抓得到主窗口，抓下来框里是空的。
+所以这里从外面来：先 EnumWindows 找到这个进程的弹窗，取它真实的可见边框，
+再 ImageGrab 抓那块区域。
+
+`actionName` 是 QML 里的 objectName，程序会去调它的 open()。
 """
 
 import ctypes
@@ -20,8 +26,6 @@ from PIL import ImageGrab
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXE = os.path.join(BASE, "build", "CourseTable.exe")
-OUT = os.path.join(BASE, "shots", "f-import.png")
-TMP = os.path.join(BASE, "shots", "_main_tmp.png")
 
 user32 = ctypes.windll.user32
 try:
@@ -31,7 +35,7 @@ except OSError:
 
 WNDENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
-# GetWindowRect 会把窗口四周的透明阴影也算进去，抓下来边上会多一圈背景。
+# GetWindowRect 会把窗口四周的透明阴影也算进去，抓下来边上多一圈背景。
 # DWM 的 extended frame bounds 才是肉眼看到的那个框。
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
 
@@ -39,9 +43,9 @@ DWMWA_EXTENDED_FRAME_BOUNDS = 9
 def visible_rect(hwnd):
     rect = wt.RECT()
     try:
-        dwm = ctypes.windll.dwmapi
-        hr = dwm.DwmGetWindowAttribute(wt.HWND(hwnd), DWMWA_EXTENDED_FRAME_BOUNDS,
-                                       ctypes.byref(rect), ctypes.sizeof(rect))
+        hr = ctypes.windll.dwmapi.DwmGetWindowAttribute(
+            wt.HWND(hwnd), DWMWA_EXTENDED_FRAME_BOUNDS,
+            ctypes.byref(rect), ctypes.sizeof(rect))
         if hr == 0 and rect.right > rect.left and rect.bottom > rect.top:
             return rect.left, rect.top, rect.right, rect.bottom
     except OSError:
@@ -56,9 +60,7 @@ def windows_of(pid):
     def cb(hwnd, _):
         wpid = wt.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
-        if wpid.value != pid:
-            return True
-        if not user32.IsWindowVisible(hwnd):
+        if wpid.value != pid or not user32.IsWindowVisible(hwnd):
             return True
         n = user32.GetWindowTextLengthW(hwnd)
         buf = ctypes.create_unicode_buffer(n + 1)
@@ -71,46 +73,55 @@ def windows_of(pid):
 
 
 def main():
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    if len(sys.argv) < 3:
+        print(__doc__)
+        return 1
+
+    action = sys.argv[1]
+    out = sys.argv[2]
+    if not os.path.isabs(out):
+        out = os.path.join(BASE, out)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
 
     env = os.environ.copy()
-    env["COURSETABLE_SHOT"] = TMP
-    env["COURSETABLE_SHOT_ACTION"] = "importDialog"
+    env["COURSETABLE_SHOT"] = os.path.join(os.path.dirname(out), "_main_tmp.png")
+    env["COURSETABLE_SHOT_ACTION"] = action
     env["COURSETABLE_SHOT_DELAY"] = "9000"  # 留 9 秒给我们从外面抓
     env["QT_FORCE_STDERR_LOGGING"] = "1"
+    for extra in sys.argv[3:]:
+        if "=" in extra:
+            key, _, val = extra.partition("=")
+            env[key] = val
 
-    proc = subprocess.Popen([EXE], cwd=os.path.join(BASE, "build"),
-                            env=env, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT)
+    proc = subprocess.Popen([EXE], cwd=os.path.join(BASE, "build"), env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
     target = None
     for _ in range(60):  # 最多等 6 秒
         time.sleep(0.1)
         wins = windows_of(proc.pid)
-        if len(wins) >= 2:  # 主窗口 + 对话框
+        if len(wins) >= 2:  # 主窗口 + 弹窗
             for w in wins:
                 print("window:", hex(w[0]), repr(w[1]), w[2:])
-            # 对话框是后出来的那个（不是主窗口「课表」）
             cand = [w for w in wins if w[1] != "课表"] or wins[1:]
             if cand:
                 target = cand[-1]
                 break
 
     if target is None:
-        print("没找到对话框窗口，这个进程只有：")
+        print("没找到弹窗，这个进程只有：")
         for w in windows_of(proc.pid):
             print("  ", hex(w[0]), repr(w[1]), w[2:])
         proc.kill()
         return 1
 
     hwnd, title = target[0], target[1]
-    # 对话框的位置和大小是 Qt 记着的，弹出来之后还会自己挪一下、撑一下。
-    # 先等它落定，**再重新取一次边框**——否则拿的是刚出现那一刻的坐标，图会抓偏。
+    # 弹窗的位置和大小是 Qt 记着的，弹出来之后还会自己挪一下、撑一下。
+    # 等它落定，**再重新取一次边框** —— 否则拿的是刚出现那一刻的坐标，图会抓偏。
     time.sleep(0.9)
     l, t, r, b = visible_rect(hwnd)
-    img = ImageGrab.grab(bbox=(l, t, r - 6, b - 5))
-    img.save(OUT)
-    print(f"抓到对话框 {title!r}: {(l, t, r, b)} -> {OUT} {img.size}")
+    ImageGrab.grab(bbox=(l, t, r - 6, b - 5)).save(out)
+    print(f"抓到弹窗 {title!r}: {(l, t, r, b)} -> {out}")
 
     proc.kill()
     proc.wait()

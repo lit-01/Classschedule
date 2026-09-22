@@ -9,7 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # 而且必须写在 qt_add_executable 之前才生效。
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 QuickDialogs2)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 QuickDialogs2 Network)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -19,6 +19,20 @@ qt_add_executable(CourseTable
     src/coursemodel.cpp
     src/calendardata.h
     src/calendardata.cpp
+    src/pdftext.h
+    src/pdftext.cpp
+    src/timetableimport.h
+    src/timetableimport.cpp
+    src/courseimporter.h
+    src/courseimporter.cpp
+    src/aiimporter.h
+    src/aiimporter.cpp
+    src/aichat.h
+    src/aichat.cpp
+    src/backgrounds.h
+    src/backgrounds.cpp
+    src/soul.h
+    src/soul.cpp
 )
 
 set(qml_sources
@@ -45,6 +59,7 @@ target_link_libraries(CourseTable PRIVATE
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::QuickDialogs2 # 导课按钮要用系统文件选择器
+    Qt6::Network       # AI 解析那条备用通道要发 HTTPS 请求
 )
 
 # 顶部横幅 + 课表区背景，编进 qrc，QML 里用 qrc:/assets/xxx.jpg 取。

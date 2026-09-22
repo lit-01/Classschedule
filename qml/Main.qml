@@ -26,6 +26,29 @@ ApplicationWindow {
     // 「改课」模式：打开后点格子才能改课 / 加课
     property bool editing: false
 
+    // 点 AI 按钮切到对话页，再点切回课表
+    property bool showChat: false
+
+    function sendChat() {
+        const text = chatInput.text
+        if (text.trim().length === 0)
+            return
+        chatInput.text = ""
+        aiChat.send(text)
+    }
+
+    // 一张课都没有的时候进对话页，先把话头递给它 —— 让它要 PDF、问开学时间
+    Component.onCompleted: {
+        // 手机上别锁桌面的 400×780，让它自己撑满屏幕
+        if (Qt.platform.os === "android")
+            root.showMaximized()
+    }
+
+    onShowChatChanged: {
+        if (showChat && courseModel.empty && aiChat.messages.length === 0)
+            aiChat.send(qsTr("发送PDF导课，如果pdf没有开学时间，请提供开学时间"))
+    }
+
     // 学期起始日一变就 +1，用来把表头日期、年月重算一遍
     property int dateRevision: 0
 
@@ -44,6 +67,7 @@ ApplicationWindow {
         property bool active: false
         property int labelSize: 26
         signal tapped()
+        signal longPressed()
 
         implicitWidth: 44
         implicitHeight: 32
@@ -65,6 +89,7 @@ ApplicationWindow {
 
         TapHandler {
             onTapped: nav.tapped()
+            onLongPressed: nav.longPressed()
         }
     }
 
@@ -83,7 +108,7 @@ ApplicationWindow {
 
             Image {
                 anchors.fill: parent
-                source: "qrc:/assets/topbar.jpg"
+                source: backgrounds.topImage
                 fillMode: Image.PreserveAspectCrop
                 asynchronous: true
             }
@@ -137,13 +162,9 @@ ApplicationWindow {
                     }
                 }
 
-                // 导课：挑一个课表 PDF
-                NavButton {
-                    label: "->"
-                    labelSize: 16
-                    Layout.leftMargin: 14
-                    onTapped: importDialog.open()
-                }
+                // 导课那个「->」按钮已经撤了。解析能力（courseImporter）和
+                // 这个 FileDialog 都留着 —— 以后要给 AI 对话加个「传课表」的
+                // 入口，接上就能用。
             }
 
             // 年月压在周次头上：年一行、月一行
@@ -181,8 +202,33 @@ ApplicationWindow {
                 }
             }
 
+            // AI 解析设置。填了 Key 之后，本地解析器认不出来的课表会交给大模型再试一次。
+            NavButton {
+                label: "AI"
+                labelSize: 12
+                active: root.showChat
+                anchors.right: plusMinus.left
+                anchors.rightMargin: 6
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 8
+                // 点一下切到对话页（再点切回课表），长按进设置
+                onTapped: root.showChat = !root.showChat
+                onLongPressed: aiSettings.open()
+            }
+
+            // 换主页背景图：贴 +/- 上面
+            NavButton {
+                label: "IMG"
+                labelSize: 10
+                anchors.right: plusMinus.right
+                anchors.bottom: plusMinus.top
+                anchors.bottomMargin: 6
+                onTapped: bgSettings.open()
+            }
+
             // 改课开关：贴横幅右下
             NavButton {
+                id: plusMinus
                 label: "+/-"
                 labelSize: 14
                 active: root.editing
@@ -198,6 +244,7 @@ ApplicationWindow {
         CourseGrid {
             Layout.fillWidth: true
             Layout.fillHeight: true
+            visible: !root.showChat
             currentWeek: root.currentWeek
             maxSections: root.maxSections
             editable: root.editing
@@ -205,6 +252,196 @@ ApplicationWindow {
 
             onCourseTapped: function (courseId) { editor.openEdit(courseId) }
             onEmptyCellTapped: function (day, section) { editor.openNew(day, section) }
+        }
+
+        // ========== AI 对话页 ==========
+        // 背景跟课表用同一张图。ColumnLayout 里不可见的项不占位置，
+        // 所以直接跟 CourseGrid 互斥显示就行。
+        Item {
+            id: chatPage
+
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: root.showChat
+
+            Image {
+                anchors.fill: parent
+                source: backgrounds.tableImage
+                fillMode: Image.PreserveAspectCrop
+            }
+
+            Text {
+                anchors.centerIn: parent
+                visible: aiChat.messages.length === 0
+                horizontalAlignment: Text.AlignHCenter
+                text: qsTr("长按 AI 按钮可以换模型、填 Key\n然后在这儿跟它聊")
+                color: "#B0BEC5"
+                font.pixelSize: 12
+            }
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 8
+                spacing: 6
+
+                ListView {
+                    id: chatList
+
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    spacing: 8
+                    model: aiChat.messages
+                    onCountChanged: positionViewAtEnd()
+
+                    delegate: Item {
+                        id: chatRow
+
+                        readonly property var msg: modelData
+                        readonly property string reasoning: msg.reasoning === undefined
+                                ? "" : String(msg.reasoning)
+                        readonly property bool hasReasoning: !msg.isUser
+                                && reasoning.length > 0
+
+                        // 思考过程默认收着，点一下展开
+                        property bool showReasoning: false
+
+                        width: chatList.width
+                        height: column.height
+
+                        Column {
+                            id: column
+
+                            width: parent.width
+                            spacing: 4
+
+                            // ---- 思考过程 ----
+                            Column {
+                                width: parent.width
+                                spacing: 2
+                                visible: chatRow.hasReasoning
+
+                                Rectangle {
+                                    width: parent.width
+                                    height: 18
+                                    color: "transparent"
+
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: chatRow.showReasoning
+                                              ? qsTr("思考过程（收起）")
+                                              : qsTr("思考过程（展开）")
+                                        color: "#78909C"
+                                        font.pixelSize: 10
+                                    }
+
+                                    TapHandler {
+                                        onTapped: chatRow.showReasoning = !chatRow.showReasoning
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: parent.width
+                                    height: reasoningText.implicitHeight + 14
+                                    radius: 6
+                                    color: "#38FFFFFF"
+                                    border.width: 1
+                                    border.color: "#2690A4AE"
+                                    visible: chatRow.showReasoning
+
+                                    Text {
+                                        id: reasoningText
+
+                                        anchors.centerIn: parent
+                                        width: parent.width - 14
+                                        text: chatRow.reasoning
+                                        color: "#78909C"
+                                        font.pixelSize: 10
+                                        wrapMode: Text.Wrap
+                                    }
+                                }
+                            }
+
+                            // ---- 正文气泡 ----
+                            Item {
+                                width: parent.width
+                                height: bubble.height
+
+                                Rectangle {
+                                    id: bubble
+
+                                    // 自己说的靠右，AI 说的靠左
+                                    anchors.right: chatRow.msg.isUser ? parent.right : undefined
+                                    anchors.left: chatRow.msg.isUser ? undefined : parent.left
+                                    width: Math.min(chatList.width * 0.8,
+                                                    label.implicitWidth + 22)
+                                    height: label.implicitHeight + 16
+                                    radius: 10
+                                    // 自己的话：淡蓝底配深蓝字
+                                    color: chatRow.msg.isUser ? "#BBDEFB" : "#F2FFFFFF"
+                                    border.width: chatRow.msg.isUser ? 0 : 1
+                                    border.color: "#4D90A4AE"
+
+                                    Text {
+                                        id: label
+
+                                        anchors.centerIn: parent
+                                        width: bubble.width - 22
+                                        text: chatRow.msg.content
+                                        color: chatRow.msg.isUser ? "#0D3A6B" : "#263238"
+                                        font.pixelSize: 12
+                                        wrapMode: Text.Wrap
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    TextField {
+                        id: chatInput
+
+                        Layout.fillWidth: true
+                        placeholderText: aiChat.busy ? qsTr("正在回…") : qsTr("说点什么")
+                        enabled: !aiChat.busy
+                        onAccepted: root.sendChat()
+
+                        // 做成圆角的，跟气泡一个风格
+                        leftPadding: 14
+                        rightPadding: 14
+                        background: Rectangle {
+                            radius: height / 2
+                            color: "#F2FFFFFF"
+                            border.width: 1
+                            border.color: "#4D90A4AE"
+                        }
+                    }
+
+                    Button {
+                        Layout.preferredWidth: 40
+                        Layout.preferredHeight: 36
+                        text: "->"
+                        enabled: !aiChat.busy && chatInput.text.trim().length > 0
+                        onClicked: root.sendChat()
+
+                        background: Rectangle {
+                            radius: height / 2
+                            color: enabled ? root.barColor : "#B0BEC5"
+                        }
+                        contentItem: Text {
+                            text: "->"
+                            color: "white"
+                            font.bold: true
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -227,20 +464,356 @@ ApplicationWindow {
         // 用户放课表 PDF 的地方八成在下载或文档里。
         currentFolder: StandardPaths.writableLocation(StandardPaths.HomeLocation)
         nameFilters: [qsTr("PDF 文件 (*.pdf)"), qsTr("所有文件 (*)")]
-        onAccepted: {
-            const parts = selectedFile.toString().split("/")
-            importNote.fileName = parts[parts.length - 1]
-            importNote.open()
+        onAccepted: courseImporter.importFile(selectedFile)
+    }
+
+    // 只有导课失败才弹（导成了不打扰）
+    MessageDialog {
+        id: importNote
+        objectName: "importNote"
+
+        title: qsTr("导课没成")
+        text: qsTr("这份课表没解析出来")
+        informativeText: courseImporter.lastError
+    }
+
+    Connections {
+        target: courseImporter
+
+        function onFinished(ok) {
+            // 学期一共多少周，按导进来的课自动定
+            if (ok && courseImporter.lastMaxWeek > 0)
+                root.totalWeeks = courseImporter.lastMaxWeek
+
+            // 导成了不打扰 —— 课表变了本身就是反馈。只有没导成才需要说一句。
+            if (!ok)
+                importNote.open()
         }
     }
 
-    MessageDialog {
-        id: importNote
+    // AI 设置：长按 AI 按钮进来。只有「用哪家」和「API Key」两项 ——
+    // 接口地址和模型跟着预设走，不用用户操心。
+    Dialog {
+        id: aiSettings
+        objectName: "aiSettings"
 
-        property string fileName: ""
+        title: qsTr("AI")
+        modal: true
+        anchors.centerIn: parent
+        width: 300
 
-        title: qsTr("导课")
-        text: qsTr("已选中：%1").arg(importNote.fileName)
-        informativeText: qsTr("PDF 解析还没接上——得先装 Qt PDF 模块，再照着你这张课表的版式写解析。")
+        // 默认的 header 是一条不透明的白条，跟半透明背景拼一起很割裂，
+        // 换成光秃秃一个 Label
+        header: Label {
+            text: qsTr("AI")
+            font.pixelSize: 16
+            padding: 12
+        }
+
+        // 背景压成半透明的，能透出后面的底图
+        background: Rectangle {
+            color: "#C0FFFFFF"
+            radius: 8
+            border.width: 1
+            border.color: "#4DFFFFFF"
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 8
+
+            ComboBox {
+                id: providerBox
+                objectName: "providerBox"
+                Layout.fillWidth: true
+                model: [qsTr("混元"), "DeepSeek"]
+
+                Component.onCompleted: currentIndex = aiImporter.preset
+                onActivated: aiImporter.applyPreset(currentIndex)
+            }
+
+            Label {
+                Layout.topMargin: 4
+                text: qsTr("API Key")
+                font.pixelSize: 12
+                color: "#546E7A"
+            }
+            TextField {
+                id: apiKeyField
+                Layout.fillWidth: true
+                placeholderText: "sk-..."
+                echoMode: TextInput.Password
+                text: aiImporter.apiKey
+            }
+
+            // 角色不是「用哪家」，是 AI 的性格设定，所以单独一个入口
+            Button {
+                Layout.fillWidth: true
+                Layout.topMargin: 6
+                text: qsTr("角色")
+                onClicked: {
+                    soulArea.text = soul.text
+                    aiSettings.close()
+                    soulDialog.open()
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: 6
+
+                Item { Layout.fillWidth: true }
+
+                Button {
+                    text: qsTr("关闭")
+                    onClicked: {
+                        // 点了就存，别指望用户先去点别处触发失焦
+                        aiImporter.apiKey = apiKeyField.text
+                        aiSettings.close()
+                    }
+                }
+            }
+        }
+    }
+
+    // 换主页那两张背景图
+    Dialog {
+        id: bgSettings
+        objectName: "bgSettings"
+
+        title: qsTr("背景图")
+        modal: true
+        anchors.centerIn: parent
+        width: 300
+
+        header: Label {
+            text: qsTr("背景图")
+            font.pixelSize: 16
+            padding: 12
+        }
+
+        // 跟 AI 那个设置框保持一致
+        background: Rectangle {
+            color: "#C0FFFFFF"
+            radius: 8
+            border.width: 1
+            border.color: "#4DFFFFFF"
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 6
+
+            Label {
+                text: qsTr("顶部横幅")
+                font.pixelSize: 12
+                color: "#546E7A"
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                Button { text: qsTr("换一张"); onClicked: topPicker.open() }
+                Button { text: qsTr("恢复默认"); onClicked: backgrounds.resetTop() }
+                Item { Layout.fillWidth: true }
+            }
+
+            Label {
+                Layout.topMargin: 6
+                text: qsTr("课表背景")
+                font.pixelSize: 12
+                color: "#546E7A"
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                Button { text: qsTr("换一张"); onClicked: tablePicker.open() }
+                Button { text: qsTr("恢复默认"); onClicked: backgrounds.resetTable() }
+                Item { Layout.fillWidth: true }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: 8
+                Item { Layout.fillWidth: true }
+                Button { text: qsTr("关闭"); onClicked: bgSettings.close() }
+            }
+        }
+    }
+
+    FileDialog {
+        id: topPicker
+        objectName: "topPicker"
+
+        title: qsTr("选一张顶部横幅")
+        options: FileDialog.DontUseNativeDialog | FileDialog.ReadOnly
+        fileMode: FileDialog.OpenFile
+        currentFolder: StandardPaths.writableLocation(StandardPaths.PicturesLocation)
+        nameFilters: [qsTr("图片 (*.png *.jpg *.jpeg *.bmp *.webp)"), qsTr("所有文件 (*)")]
+        onAccepted: backgrounds.setTop(selectedFile)
+    }
+
+    FileDialog {
+        id: tablePicker
+        objectName: "tablePicker"
+
+        title: qsTr("选一张课表背景")
+        options: FileDialog.DontUseNativeDialog | FileDialog.ReadOnly
+        fileMode: FileDialog.OpenFile
+        currentFolder: StandardPaths.writableLocation(StandardPaths.PicturesLocation)
+        nameFilters: [qsTr("图片 (*.png *.jpg *.jpeg *.bmp *.webp)"), qsTr("所有文件 (*)")]
+        onAccepted: backgrounds.setTable(selectedFile)
+    }
+
+    // 角色：AI 的性格设定，跟 WorkBuddy 那份 SOUL.md 一个意思
+    Dialog {
+        id: soulDialog
+        objectName: "soulDialog"
+
+        title: qsTr("角色")
+        modal: true
+        anchors.centerIn: parent
+        width: 340
+        height: 420
+
+        header: Label {
+            text: qsTr("角色")
+            font.pixelSize: 16
+            padding: 12
+        }
+
+        // 所有设置栏统一 75% 不透明，能透出后面的背景图
+        background: Rectangle {
+            color: "#C0FFFFFF"
+            radius: 8
+            border.width: 1
+            border.color: "#4DFFFFFF"
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 6
+
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                font.pixelSize: 11
+                color: "#546E7A"
+                text: qsTr("这段文字会作为系统提示词发给 AI，决定它说话什么调调 —— 跟用哪家模型没关系。")
+            }
+
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+
+                TextArea {
+                    id: soulArea
+                    wrapMode: TextArea.Wrap
+                    font.pixelSize: 12
+                    text: soul.text
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+
+                Button {
+                    text: qsTr("恢复默认")
+                    onClicked: {
+                        soul.reset()
+                        soulArea.text = soul.text
+                    }
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Button {
+                    text: qsTr("保存")
+                    onClicked: {
+                        soul.setText(soulArea.text)
+                        soulDialog.close()
+                    }
+                }
+            }
+        }
+    }
+
+    // AI 想改角色设定时弹这个 —— 它没权限自己改，必须用户点头
+    Dialog {
+        id: roleConfirm
+        objectName: "roleConfirm"
+
+        title: qsTr("角色")
+        modal: true
+        anchors.centerIn: parent
+        width: 340
+        height: 380
+
+        header: Label {
+            text: qsTr("角色")
+            font.pixelSize: 16
+            padding: 12
+        }
+
+        background: Rectangle {
+            color: "#C0FFFFFF"
+            radius: 8
+            border.width: 1
+            border.color: "#4DFFFFFF"
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 6
+
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                font.pixelSize: 11
+                color: "#546E7A"
+                text: qsTr("AI 想把「角色设定」整个换成下面这样。同意吗？（不同意就保持原样）")
+            }
+
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+
+                TextArea {
+                    text: aiChat.pendingRole
+                    readOnly: true
+                    wrapMode: TextArea.Wrap
+                    font.pixelSize: 12
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+
+                Button {
+                    text: qsTr("不同意")
+                    onClicked: {
+                        aiChat.rejectRoleChange()
+                        roleConfirm.close()
+                    }
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Button {
+                    text: qsTr("同意")
+                    onClicked: {
+                        aiChat.acceptRoleChange()
+                        roleConfirm.close()
+                    }
+                }
+            }
+        }
+    }
+
+    Connections {
+        target: aiChat
+
+        function onRoleChangeRequested() {
+            roleConfirm.open()
+        }
     }
 }

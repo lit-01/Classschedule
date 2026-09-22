@@ -46,7 +46,7 @@ Item {
     // 原图是竖构图，按高度铺满、左右各裁掉一点点
     Image {
         anchors.fill: parent
-        source: "qrc:/assets/tablebg.jpg"
+        source: backgrounds.tableImage
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
     }
@@ -211,29 +211,31 @@ Item {
                     delegate: Item {
                         id: cell
 
-                        // 没有周次信息（startWeek <= 0）的课每周都上
+                        // 这周上不上。判断统一交给 C++ —— 从课表 PDF 导进来的课
+                        // 周次可能是不连续的（4-8周,10-16周），QML 这边那套
+                        // startWeek/endWeek/weekType 算不对。
                         readonly property bool inThisWeek: {
-                            if (model.startWeek <= 0 || model.endWeek <= 0)
-                                return true
-                            if (grid.currentWeek < model.startWeek || grid.currentWeek > model.endWeek)
-                                return false
-                            if (model.weekType === 1 && grid.currentWeek % 2 === 0)
-                                return false
-                            if (model.weekType === 2 && grid.currentWeek % 2 === 1)
-                                return false
-                            return true
+                            grid.revision
+                            return courseModel.isActive(model.courseId, grid.currentWeek)
                         }
 
-                        readonly property string weekLabel: {
-                            if (model.startWeek <= 0 || model.endWeek <= 0)
-                                return ""
-                            let t = model.startWeek + "-" + model.endWeek + "周"
-                            if (model.weekType === 1)
-                                t += "单"
-                            else if (model.weekType === 2)
-                                t += "双"
-                            return t
+                        // 这一周，这个格子里同时要显示几门课、我是第几门。
+                        // 只有真撞上（同一周两门课都上）才横向排开；单双周分开上的
+                        // 两门课虽然占同一格，但每周只有一门有效，就该占满整格。
+                        readonly property int liveCount: {
+                            grid.revision
+                            return courseModel.liveSlotCount(model.day, model.startSection,
+                                                             grid.currentWeek)
                         }
+                        readonly property int liveIndex: {
+                            grid.revision
+                            return courseModel.liveSlotIndex(model.courseId, grid.currentWeek)
+                        }
+                        readonly property int slotStart: liveCount > 1
+                                ? Math.round(grid.colWidth / liveCount * liveIndex) : 0
+                        readonly property int slotEnd: liveCount > 1
+                                ? Math.round(grid.colWidth / liveCount * (liveIndex + 1))
+                                : grid.colWidth
 
                         // 这天是不是放假 / 调休 —— 是的话整块课变灰
                         readonly property bool grayDay: {
@@ -242,9 +244,9 @@ Item {
                         }
 
                         visible: inThisWeek
-                        x: (model.day - 1) * grid.colWidth
+                        x: (model.day - 1) * grid.colWidth + slotStart
                         y: (model.startSection - 1) * grid.rowHeight
-                        width: grid.colWidth
+                        width: slotEnd - slotStart
                         height: (model.endSection - model.startSection + 1) * grid.rowHeight
 
                         CourseCard {
@@ -254,7 +256,7 @@ Item {
                             courseName: model.name
                             courseTeacher: model.teacher
                             courseRoom: model.room
-                            courseWeek: cell.weekLabel
+                            courseCategory: model.category
                             cardColor: model.color
                             editable: grid.editable
                             grayDay: cell.grayDay
