@@ -45,10 +45,9 @@ Rectangle {
             width: parent.width
             text: card.courseName
             color: card.nameColor
-            font.pixelSize: 10
+            font.pixelSize: 9
             font.bold: true
             wrapMode: Text.Wrap
-            elide: Text.ElideRight
             maximumLineCount: 3
         }
 
@@ -66,8 +65,9 @@ Rectangle {
             }
             color: card.subColor
             font.pixelSize: 8
-            elide: Text.ElideRight
-            maximumLineCount: 1
+            // 不再截断，整行换行显示完整（手机窄列里「理工实验楼」这类才不丢字）
+            wrapMode: Text.Wrap
+            maximumLineCount: 2
         }
 
         Text {
@@ -76,8 +76,9 @@ Rectangle {
             text: card.courseRoom
             color: card.subColor
             font.pixelSize: 8
-            elide: Text.ElideRight
-            maximumLineCount: 1
+            // 同上：地点也整行换行，别截成 …
+            wrapMode: Text.Wrap
+            maximumLineCount: 2
         }
     }
 

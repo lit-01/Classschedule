@@ -1,8 +1,11 @@
 #include "backgrounds.h"
 
+#include "filebridge.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QImage>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QStringList>
@@ -91,6 +94,58 @@ bool Backgrounds::setTable(const QUrl &file)
 
     m_table = path;
     QSettings().setValue(QLatin1String(kTableKey), m_table);
+    emit backgroundChanged();
+    return true;
+}
+
+bool Backgrounds::cropAndSet(const QString &kind, const QUrl &source,
+                             qreal nx, qreal ny, qreal nw, qreal nh)
+{
+    const auto fail = [this](const QString &why) {
+        m_lastError = why;
+        emit lastErrorChanged();
+        return false;
+    };
+
+    QString err;
+    const QString src = fileBridgeResolve(source, &err);
+    if (src.isEmpty())
+        return fail(err.isEmpty() ? QStringLiteral("这个文件读不了") : err);
+
+    QImage img(src);
+    if (img.isNull())
+        return fail(QStringLiteral("图片读不出来"));
+
+    // 选区是相对原图的归一化坐标，换算回像素并夹到图内
+    QRect r(qRound(nx * img.width()), qRound(ny * img.height()),
+            qRound(nw * img.width()), qRound(nh * img.height()));
+    r = r.intersected(img.rect());
+    if (r.width() < 8 || r.height() < 8)
+        return fail(QStringLiteral("选的区域太小了"));
+
+    const QImage cropped = (r == img.rect()) ? img : img.copy(r);
+
+    // 先落一份临时文件，再走 store() 归档（它按槽位清旧图、按后缀存新图）
+    const QString tmp = backgroundsDir() + QStringLiteral("/_crop_tmp.png");
+    if (!cropped.save(tmp, "PNG"))
+        return fail(QStringLiteral("裁剪结果没存下来"));
+
+    const QString slot = (kind == QLatin1String("top")) ? QStringLiteral("top")
+                                                        : QStringLiteral("table");
+    const QString path = store(QUrl::fromLocalFile(tmp), slot);
+    QFile::remove(tmp);
+    if (path.isEmpty())
+        return fail(QStringLiteral("背景图没存下来"));
+
+    if (slot == QLatin1String("top")) {
+        m_top = path;
+        QSettings().setValue(QLatin1String(kTopKey), m_top);
+    } else {
+        m_table = path;
+        QSettings().setValue(QLatin1String(kTableKey), m_table);
+    }
+    m_lastError.clear();
+    emit lastErrorChanged();
     emit backgroundChanged();
     return true;
 }

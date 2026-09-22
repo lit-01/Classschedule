@@ -17,6 +17,8 @@ qt_add_executable(CourseTable
     main.cpp
     src/coursemodel.h
     src/coursemodel.cpp
+    src/filebridge.h
+    src/filebridge.cpp
     src/calendardata.h
     src/calendardata.cpp
     src/pdftext.h
@@ -40,6 +42,7 @@ set(qml_sources
     qml/CourseGrid.qml
     qml/CourseCard.qml
     qml/CourseEditor.qml
+    qml/CropDialog.qml
 )
 
 # 让 QML 文件落在 QML 模块的根目录下，
@@ -70,6 +73,7 @@ qt_add_resources(CourseTable "app_assets"
     FILES
         assets/topbar.jpg
         assets/tablebg.jpg
+        assets/bgfill.jpg
     OPTIONS -no-compress
 )
 
@@ -89,4 +93,16 @@ if(ANDROID)
         "com.pony.coursetable")
     set_property(TARGET CourseTable PROPERTY QT_ANDROID_VERSION_NAME "0.1")
     set_property(TARGET CourseTable PROPERTY QT_ANDROID_VERSION_CODE 1)
+
+    # HTTPS 在安卓上必须自带 OpenSSL：Qt 只打了 qopensslbackend 插件，
+    # libcrypto_3.so / libssl_3.so 得自己塞进 APK。缺了它们 TLS 起不来，
+    # 表现就是「AI 消息发不出去」（桌面走 Schannel，所以桌面完全正常）。
+    # 库是 KDAB/android_openssl 的预编译版，放在 D:\Android\openssl\<abi>\
+    set(_ssl_dir "D:/Android/openssl/${ANDROID_ABI}")
+    if(EXISTS "${_ssl_dir}/libcrypto_3.so" AND EXISTS "${_ssl_dir}/libssl_3.so")
+        set_property(TARGET CourseTable PROPERTY QT_ANDROID_EXTRA_LIBS
+            "${_ssl_dir}/libcrypto_3.so;${_ssl_dir}/libssl_3.so")
+    else()
+        message(WARNING "缺 ${_ssl_dir} 下的 OpenSSL 库，安卓端 HTTPS 会失败")
+    endif()
 endif()

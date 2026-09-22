@@ -17,6 +17,7 @@
 #include "src/calendardata.h"
 #include "src/courseimporter.h"
 #include "src/coursemodel.h"
+#include "src/filebridge.h"
 #include "src/soul.h"
 #include "src/timetableimport.h"
 
@@ -81,9 +82,10 @@ int main(int argc, char *argv[])
     CourseModel courseModel;
     CalendarData calendarData;
     Backgrounds backgrounds;
+    FileBridge fileBridge;
     AiImporter aiImporter;
     Soul soul;
-    AiChat aiChat(&aiImporter, &courseModel, &soul);
+    AiChat aiChat(&aiImporter, &courseModel, &soul, &calendarData);
     CourseImporter courseImporter(&courseModel, &aiImporter);
 
     // 调试用：设了 COURSETABLE_AUTOIMPORT 就直接把这份 PDF 导进来，省得每次
@@ -103,6 +105,16 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("aiChat"), &aiChat);
     engine.rootContext()->setContextProperty(QStringLiteral("backgrounds"), &backgrounds);
     engine.rootContext()->setContextProperty(QStringLiteral("soul"), &soul);
+    // 安卓的系统文件管理器给的是 content://，QML 的 Image 也读不了，
+    // 所以 QML 那边拿到文件先过它一下变成真本地路径
+    engine.rootContext()->setContextProperty(QStringLiteral("fileBridge"), &fileBridge);
+
+    QObject::connect(&app, &QGuiApplication::applicationStateChanged,
+                     &fileBridge, [&fileBridge](Qt::ApplicationState state) {
+                         // 从系统文件选择器回来时，把选好的文件收进来
+                         if (state == Qt::ApplicationActive)
+                             fileBridge.checkPicked();
+                     });
 
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app,
                      []() { QCoreApplication::exit(-1); },

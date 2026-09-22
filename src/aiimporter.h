@@ -59,6 +59,16 @@ public:
     // 把整理好的课表文字交给模型。结果异步走 succeeded / failed。
     void parse(const QString &timetableText);
 
+    // 把课表图片直接发给模型识别（多模态）。imageDataUrls 是 data: 协议的
+    // base64 图，由 imageToDataUrl 生成。结果同样走 succeeded / failed。
+    void parseImage(const QString &prompt, const QStringList &imageDataUrls);
+
+    // 图片读成 data: 协议的 base64 串（导课 / 对话附件都用），读不出返回空。
+    static QString imageToDataUrl(const QString &filePath);
+
+    // 导课提示词。forImage=true 时是给「直接看图片」的模型看的版本。
+    static QString importPrompt(bool forImage);
+
 signals:
     void configChanged();
     // courses 里每个 map 的字段和 CourseModel::replaceAll 要的一致
@@ -68,6 +78,11 @@ signals:
 private:
     void store();
     void handleReply(QNetworkReply *reply);
+    // parse / parseImage 共用的发请求逻辑：userParts 是「一条多模态用户消息」的内容
+    void postParse(const QJsonArray &userParts);
+    // 当前服务商的配置键前缀：ai/p0/（混元）、ai/p1/（DeepSeek）。
+    // 每家的 apiBase / apiKey / model 各自独立存，切服务商不串。
+    QString keyPrefix() const;
 
     QNetworkAccessManager *m_net = nullptr;
     QString m_apiBase;

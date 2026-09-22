@@ -7,6 +7,10 @@
     <!-- %%INSERT_PERMISSIONS -->
     <!-- 读手机自带的日历，用来取法定节假日 / 调休安排 -->
     <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <!-- AI 对话要联网发请求，不加这个安卓直接把请求拦掉（表现为一直没回复） -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Qt Network 用它判断当前有没有网、是 WiFi 还是流量 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- %%INSERT_FEATURES -->
     <supports-screens
         android:anyDensity="true"
@@ -16,15 +20,15 @@
     <application
         android:name="org.qtproject.qt.android.bindings.QtApplication"
         android:hardwareAccelerated="true"
-        android:label="-- %%INSERT_APP_NAME%% --"
-        android:icon="-- %%INSERT_APP_ICON%% --"
+        android:label="课程表"
+        android:icon="@mipmap/ic_launcher"
         android:enableOnBackInvokedCallback="false"
         android:allowBackup="true"
         android:fullBackupOnly="false">
         <activity
-            android:name="org.qtproject.qt.android.bindings.QtActivity"
+            android:name="com.pony.coursetable.MainActivity"
             android:configChanges="orientation|uiMode|screenLayout|screenSize|smallestScreenSize|layoutDirection|locale|fontScale|keyboard|keyboardHidden|navigation|mcc|mnc|density"
-            android:label="-- %%INSERT_APP_NAME%% --"
+            android:label="课程表"
             android:launchMode="singleTop"
             android:screenOrientation="unspecified"
             android:exported="true">

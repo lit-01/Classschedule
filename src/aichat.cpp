@@ -1,9 +1,17 @@
 #include "aichat.h"
 
 #include "aiimporter.h"
+#include "calendardata.h"
 #include "coursemodel.h"
+#include "filebridge.h"
 #include "soul.h"
+#include "pdftext.h"
+#include "timetableimport.h"
 
+#include <QBuffer>
+#include <QFile>
+#include <QFileInfo>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -43,6 +51,35 @@ QString labelFromWeeks(const QVariantList &weeks)
         i = j + 1;
     }
     return parts.join(QLatin1Char(',')) + QStringLiteral("周");
+}
+
+// 多模态消息里的一个「文本块」
+QVariantMap textPart(const QString &text)
+{
+    QVariantMap part;
+    part.insert(QStringLiteral("type"), QStringLiteral("text"));
+    part.insert(QStringLiteral("text"), text);
+    return part;
+}
+
+// 把整个文件读进字节（附件用）
+QByteArray readFile(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return {};
+    return f.readAll();
+}
+
+// 支持发的图片格式
+bool isImageFile(const QString &lowerPath)
+{
+    return lowerPath.endsWith(QStringLiteral(".png"))
+           || lowerPath.endsWith(QStringLiteral(".jpg"))
+           || lowerPath.endsWith(QStringLiteral(".jpeg"))
+           || lowerPath.endsWith(QStringLiteral(".bmp"))
+           || lowerPath.endsWith(QStringLiteral(".webp"))
+           || lowerPath.endsWith(QStringLiteral(".gif"));
 }
 
 struct OpsBlock
@@ -99,21 +136,26 @@ OpsBlock findOps(const QString &reply)
 } // namespace
 
 AiChat::AiChat(AiImporter *config, CourseModel *courses, Soul *soul,
-               QObject *parent)
+               CalendarData *calendar, QObject *parent)
     : QObject(parent)
     , m_config(config)
     , m_courses(courses)
     , m_soul(soul)
+    , m_calendar(calendar)
     , m_net(new QNetworkAccessManager(this))
 {
 }
 
 void AiChat::append(const QString &role, const QString &content,
-                    const QString &reasoning)
+                    const QString &reasoning, const QVariant &parts)
 {
     QVariantMap message;
     message.insert(QStringLiteral("role"), role);
     message.insert(QStringLiteral("content"), content);
+    // 发给模型的实际内容：普通消息是字符串，带附件的是多模态数组。
+    // 界面显示只看 content（纯文字），parts 只在组请求时用。
+    if (parts.isValid())
+        message.insert(QStringLiteral("parts"), parts);
     // 思考过程：有思考模式的模型会单独回一段，界面上折叠着显示
     message.insert(QStringLiteral("reasoning"), reasoning);
     message.insert(QStringLiteral("isUser"), role == QLatin1String("user"));
@@ -165,6 +207,53 @@ QString AiChat::timetableContext() const
     return text;
 }
 
+QString AiChat::dateContext() const
+{
+    static const char *const kWeekDays[] = {"", "星期一", "星期二", "星期三", "星期四",
+                                            "星期五", "星期六", "星期日"};
+    const QDate today = QDate::currentDate();
+
+    QString s = QStringLiteral("\n【今天的日期】%1 %2。")
+                    .arg(today.toString(QStringLiteral("yyyy-MM-dd")),
+                         QString::fromUtf8(kWeekDays[qBound(1, today.dayOfWeek(), 7)]));
+
+    if (!m_calendar) {
+        s += QStringLiteral("（学期起始日还没定，问用户开学第一天是几号）\n");
+        return s;
+    }
+
+    const QDate first = m_calendar->firstMonday();
+    int week = 0;
+    if (first.isValid()) {
+        week = first.daysTo(today) / 7 + 1;
+        s += QStringLiteral("第 1 周的周一是 %1，所以今天是第 %2 周。")
+                 .arg(first.toString(QStringLiteral("yyyy-MM-dd")))
+                 .arg(week);
+        if (week < 1)
+            s += QStringLiteral("（今天还在开学前）");
+        if (m_calendar->isHoliday(today.toString(QStringLiteral("yyyy-MM-dd"))))
+            s += QStringLiteral("今天是法定放假日。");
+    } else {
+        s += QStringLiteral("学期起始日还没定，需要时问用户开学第一天是几号。");
+    }
+
+    // 顺手把「今天有什么课」算出来，省得模型自己数错
+    if (m_courses && !m_courses->empty() && week >= 1) {
+        QStringList todayCourses;
+        for (const Course &c : m_courses->allCourses()) {
+            if (c.day == today.dayOfWeek() && m_courses->isActive(c.id, week))
+                todayCourses.append(c.name);
+        }
+        s += todayCourses.isEmpty()
+                 ? QStringLiteral("今天没有课。")
+                 : QStringLiteral("今天有课：%1。").arg(todayCourses.join(QStringLiteral("、")));
+    }
+
+    s += QStringLiteral("\n用户说的「今天 / 明天 / 这周」都按这个日期算；"
+                        "涉及具体哪一天上课，先把「第几周 + 星期几」对上再回答。\n");
+    return s;
+}
+
 QString AiChat::systemPrompt() const
 {
     // 人格那部分来自 Soul —— 一份用户可以自己改的文件，跟用哪家模型无关
@@ -186,6 +275,21 @@ QString AiChat::systemPrompt() const
         "取 1-5（一天 5 个大节，一个大节 = 两小节）；weeks 是具体第几周的数组。\n"
         "不需要改课的时候就别输出这段 JSON。\n\n");
 
+    prompt += QStringLiteral(
+        "\n如果用户发来的是**课表（PDF 或图片）**，请直接识别里面的每一门课，"
+        "在回复末尾用改课 JSON 把课程 add 进去（字段同上：name / teacher / room / "
+        "category（可留空）/ day / startSection / endSection / weeks）。"
+        "只 add 新课，不要删掉现有课表。识别不出周次时先问用户开学时间。\n");
+
+    prompt += QStringLiteral(
+        "\n课表 PDF 里一般没有「开学日期」，但它决定了日期显示对不对。"
+        "用户告诉你这学期第一周的周一（开学那天）时，用这个 op 存下来：\n"
+        "```json\n"
+        "{\"ops\":[{\"op\":\"set_first_monday\",\"date\":\"2026-09-07\"}]}\n"
+        "```\n"
+        "拿不准就先问清楚，别自己猜。\n");
+
+    prompt += dateContext();
     prompt += timetableContext();
     return prompt;
 }
@@ -209,6 +313,15 @@ QString AiChat::applyOps(const QString &reply)
                 m_pendingRole = text;
                 emit roleChangeRequested();
             }
+            continue;
+        }
+
+        if (kind == QLatin1String("set_first_monday")) {
+            // 用户说了开学第一周的周一，存下来，日期显示就对了
+            const QString date = item.value(QStringLiteral("date")).toString().trimmed();
+            const QDate parsed = QDate::fromString(date, QStringLiteral("yyyy-MM-dd"));
+            if (m_calendar && parsed.isValid())
+                m_calendar->setFirstMonday(parsed);
             continue;
         }
 
@@ -277,19 +390,92 @@ QString AiChat::applyOps(const QString &reply)
 
 void AiChat::send(const QString &text)
 {
+    send(text, {});
+}
+
+void AiChat::send(const QString &text, const QStringList &filePaths)
+{
     const QString trimmed = text.trimmed();
-    if (trimmed.isEmpty() || !m_config)
+    if (trimmed.isEmpty() && filePaths.isEmpty())
+        return;
+    if (!m_config)
         return;
 
+    // 拼出「界面显示用的纯文字」和「发给模型的多模态内容」两部分
+    QString display = trimmed;
+    QVariantList parts;
+    if (!trimmed.isEmpty())
+        parts.append(textPart(trimmed));
+
+    for (const QString &fp : filePaths) {
+        // 系统文件选择器给的不一定是本地路径（安卓上是 content://），
+        // 统一过 FileBridge：拿显示名 + 变成真读得到的本地文件
+        const QUrl url(fp);
+        QString name = fileBridgeDisplayName(url);
+        QString resolveErr;
+        const QString local = fileBridgeResolve(url, &resolveErr);
+
+        if (local.isEmpty()) {
+            display += QStringLiteral("\n[附件] %1（读不了：%2）")
+                           .arg(name.isEmpty() ? QStringLiteral("附件") : name,
+                                resolveErr.isEmpty() ? QStringLiteral("未知原因") : resolveErr);
+            continue;
+        }
+        if (name.isEmpty())
+            name = QFileInfo(local).fileName();
+        const QString lower = name.toLower();
+
+        if (lower.endsWith(QStringLiteral(".pdf"))) {
+            // PDF 没有通用视觉接口，先本地抠文字；抠不出来就如实告诉模型
+            QString err;
+            const QByteArray bytes = readFile(local);
+            QString pdfText;
+            if (!bytes.isEmpty()) {
+                const QVector<PdfPageText> pages =
+                    PdfTextExtractor::extract(bytes, &err);
+                if (!pages.isEmpty())
+                    pdfText = TimetableImporter::extractTimetableText(bytes, &err);
+            }
+            if (!pdfText.isEmpty()) {
+                parts.append(textPart(QStringLiteral("（课表 PDF 内容）\n") + pdfText));
+                display += QStringLiteral("\n[附件] %1").arg(name);
+            } else {
+                display += QStringLiteral("\n[附件] %1（PDF 没读到文字，可能是扫描件）")
+                               .arg(name);
+            }
+        } else if (isImageFile(lower)) {
+            // 图片：原图 base64 发给支持视觉的模型直接看
+            const QString dataUrl = AiImporter::imageToDataUrl(local);
+            if (!dataUrl.isEmpty()) {
+                QVariantMap img;
+                img.insert(QStringLiteral("type"), QStringLiteral("image_url"));
+                QVariantMap u;
+                u.insert(QStringLiteral("url"), dataUrl);
+                img.insert(QStringLiteral("image_url"), u);
+                parts.append(img);
+                display += QStringLiteral("\n[附件] %1").arg(name);
+            } else {
+                display += QStringLiteral("\n[附件] %1（图片读不出来）").arg(name);
+            }
+        } else {
+            display += QStringLiteral("\n[附件] %1（不支持的格式）").arg(name);
+        }
+    }
+
     if (!m_config->configured()) {
-        append(QStringLiteral("user"), trimmed);
+        append(QStringLiteral("user"), display);
         append(QStringLiteral("assistant"),
                tr("还没配 API。长按上面那个 AI 按钮，把 Key 填上就能聊了。"));
         return;
     }
 
-    append(QStringLiteral("user"), trimmed);
+    append(QStringLiteral("user"), display, QString(),
+           parts.isEmpty() ? QVariant() : QVariant(parts));
+    postRequest();
+}
 
+void AiChat::postRequest()
+{
     QString base = m_config->apiBase();
     while (base.endsWith(QLatin1Char('/')))
         base.chop(1);
@@ -314,8 +500,13 @@ void AiChat::send(const QString &text)
         QJsonObject item;
         item.insert(QStringLiteral("role"),
                     m.value(QStringLiteral("role")).toString());
-        item.insert(QStringLiteral("content"),
-                    m.value(QStringLiteral("content")).toString());
+        const QVariant parts = m.value(QStringLiteral("parts"));
+        if (parts.isValid() && parts.canConvert<QVariantList>())
+            item.insert(QStringLiteral("content"),
+                        QJsonArray::fromVariantList(parts.toList()));
+        else
+            item.insert(QStringLiteral("content"),
+                        m.value(QStringLiteral("content")).toString());
         messages.append(item);
     }
 

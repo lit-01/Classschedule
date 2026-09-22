@@ -83,6 +83,27 @@ bool CourseImporter::importFile(const QUrl &fileUrl)
 
     const QString path = fileUrl.isLocalFile() ? fileUrl.toLocalFile()
                                                : fileUrl.toString();
+    const QString lower = path.toLower();
+
+    // 图片：本地没法解析，直接丢给支持视觉的模型识别
+    if (lower.endsWith(QStringLiteral(".png")) || lower.endsWith(QStringLiteral(".jpg"))
+        || lower.endsWith(QStringLiteral(".jpeg")) || lower.endsWith(QStringLiteral(".bmp"))
+        || lower.endsWith(QStringLiteral(".webp")) || lower.endsWith(QStringLiteral(".gif"))) {
+        if (!m_ai || !m_ai->configured()) {
+            m_lastError =
+                tr("图片导入要 AI 识别，请先长按 AI 按钮把 Key 填上。");
+            emit finished(false);
+            return false;
+        }
+        const QString dataUrl = AiImporter::imageToDataUrl(path);
+        if (dataUrl.isEmpty()) {
+            m_lastError = tr("这张图片读不出来（格式不支持或损坏）。");
+            emit finished(false);
+            return false;
+        }
+        m_ai->parseImage(AiImporter::importPrompt(true), {dataUrl});
+        return true; // 异步，结果稍后从 finished 回来
+    }
 
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {

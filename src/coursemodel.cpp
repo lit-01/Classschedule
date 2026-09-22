@@ -124,10 +124,6 @@ CourseModel::CourseModel(QObject *parent)
     : QAbstractListModel(parent)
 {
     load();
-
-    // 第一次跑，给几门示例课，方便先看到课表长什么样
-    if (m_courses.isEmpty())
-        seedDemo();
 }
 
 int CourseModel::rowCount(const QModelIndex &parent) const
@@ -145,7 +141,19 @@ QVariant CourseModel::data(const QModelIndex &index, int role) const
     case IdRole:           return c.id;
     case NameRole:         return c.name;
     case TeacherRole:      return c.teacher;
-    case RoomRole:         return c.room;
+    case RoomRole: {
+        // 课表 PDF 的地点长这样「理工实验楼418-桌面云计算实验室」，
+        // 连字符后面那截实验室名对看课表没价值，整段截掉只留楼栋 + 房号。
+        // 在 Model 层做，已导入的旧数据和新导入的课表都统一生效。
+        QString room = c.room;
+        qsizetype cut = room.indexOf(QLatin1Char('-'));
+        const qsizetype fullCut = room.indexOf(QStringLiteral("－"));
+        if (fullCut >= 0 && (cut < 0 || fullCut < cut))
+            cut = fullCut;
+        if (cut > 0)
+            room.truncate(cut);
+        return room;
+    }
     case CategoryRole:     return c.category;
     case DayRole:          return c.day;
     case StartSectionRole: return c.startSection;

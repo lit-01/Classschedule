@@ -17,6 +17,15 @@ ApplicationWindow {
     Material.accent: "#3F51B5"
     Material.primary: "#3F51B5"
 
+    // 全窗底图：手机上开了边到边之后，状态栏 / 导航栏底下那块不再
+    // 是系统给的死白，透出来的是这张淡彩渐变；窗口里任何没被内容
+    // 盖住的角落也都由它兜底。
+    background: Image {
+        source: "qrc:/assets/bgfill.jpg"
+        fillMode: Image.PreserveAspectCrop
+        asynchronous: true
+    }
+
     property int currentWeek: 1
     property int totalWeeks: 24
 
@@ -25,6 +34,10 @@ ApplicationWindow {
 
     // 「改课」模式：打开后点格子才能改课 / 加课
     property bool editing: false
+
+    // 选文件用哪套对话框：手机上必须用系统的（Qt 自绘那个在安卓上又慢又难翻，
+    // 而且藏不到文件管理器深处）；桌面继续用内置的，截图脚本才抓得到它。
+    readonly property bool nativeFileDialog: Qt.platform.os === "android"
 
     // 点 AI 按钮切到对话页，再点切回课表
     property bool showChat: false
@@ -46,7 +59,7 @@ ApplicationWindow {
 
     onShowChatChanged: {
         if (showChat && courseModel.empty && aiChat.messages.length === 0)
-            aiChat.send(qsTr("发送PDF导课，如果pdf没有开学时间，请提供开学时间"))
+            aiChat.send(qsTr("把课表 PDF 或图片发给我（点左边「附件」），我帮你识别并导进去；如果里面没有开学时间，也告诉我。"))
     }
 
     // 学期起始日一变就 +1，用来把表头日期、年月重算一遍
@@ -95,6 +108,11 @@ ApplicationWindow {
 
     ColumnLayout {
         anchors.fill: parent
+        // 手机边到边之后，状态栏 / 导航栏会压在窗口上。
+        // 给整块界面在安卓上加安全区内边距，把内容（含 AI 对话页底部
+        // 输入框）顶到系统栏之上，不会又被导航栏盖住。Windows 上不加。
+        anchors.topMargin: Qt.platform.os === "android" ? 26 : 0
+        anchors.bottomMargin: Qt.platform.os === "android" ? 48 : 0
         spacing: 0
 
         // ========== 顶部：横幅 + 周次 / 年月 / 改课开关 ==========
@@ -148,7 +166,8 @@ ApplicationWindow {
                     text: qsTr("第 %1 周").arg(root.currentWeek)
                     color: "white"
                     font.pixelSize: 17
-                    font.bold: true
+                    // 手机小屏下粗体笔画会糊在一起，改成常规字重更清爽
+                    font.bold: false
                     style: Text.Outline
                     styleColor: "#80000000"
                 }
@@ -242,6 +261,8 @@ ApplicationWindow {
 
         // ========== 课表网格 ==========
         CourseGrid {
+            id: courseGrid
+
             Layout.fillWidth: true
             Layout.fillHeight: true
             visible: !root.showChat
@@ -402,22 +423,61 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     spacing: 6
 
-                    TextField {
-                        id: chatInput
+                    // 输入框本体：圆角胶囊，附件按钮嵌在右下角
+                    Item {
+                        id: inputBox
 
                         Layout.fillWidth: true
-                        placeholderText: aiChat.busy ? qsTr("正在回…") : qsTr("说点什么")
-                        enabled: !aiChat.busy
-                        onAccepted: root.sendChat()
+                        implicitHeight: 36
 
-                        // 做成圆角的，跟气泡一个风格
-                        leftPadding: 14
-                        rightPadding: 14
-                        background: Rectangle {
+                        // 圆角背景（原来 TextField 自带的背景挪到这儿，
+                        // TextField 自己设透明，附件按钮才能叠在里面）
+                        Rectangle {
+                            anchors.fill: parent
                             radius: height / 2
                             color: "#F2FFFFFF"
                             border.width: 1
                             border.color: "#4D90A4AE"
+                        }
+
+                        TextField {
+                            id: chatInput
+
+                            anchors.fill: parent
+                            verticalAlignment: TextInput.AlignVCenter
+                            leftPadding: 40   // 给左上角的「+」留位置
+                            rightPadding: 14
+                            placeholderText: aiChat.busy ? qsTr("正在回…") : ""
+                            enabled: !aiChat.busy
+                            onAccepted: root.sendChat()
+                            background: null
+                        }
+
+                        // 附件（PDF / 图片）：嵌在输入框内左上角，点一下挑文件
+                        Button {
+                            id: attachBtn
+
+                            width: 30
+                            height: 30
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.leftMargin: 4
+                            anchors.topMargin: 3
+                            text: "+"
+                            enabled: !aiChat.busy
+                            onClicked: root.pickFiles("attach", false, true, chatAttachDialog)
+
+                            background: Rectangle {
+                                radius: height / 2
+                                color: enabled ? "#C0FFFFFF" : "#80FFFFFF"
+                            }
+                            contentItem: Text {
+                                text: "+"
+                                color: "#263238"
+                                font.pixelSize: 16
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
                         }
                     }
 
@@ -430,7 +490,7 @@ ApplicationWindow {
 
                         background: Rectangle {
                             radius: height / 2
-                            color: enabled ? root.barColor : "#B0BEC5"
+                            color: enabled ? "#C03F51B5" : "#80000000"
                         }
                         contentItem: Text {
                             text: "->"
@@ -458,13 +518,41 @@ ApplicationWindow {
         title: qsTr("选择课表 PDF")
         // 不用系统原生对话框：系统那个是独立的顶层窗口，样式跟界面两张皮，
         // 也没法跟着主窗口一起截下来。用内置的，风格统一、也看得见。
-        options: FileDialog.DontUseNativeDialog | FileDialog.ReadOnly
+        options: root.nativeFileDialog ? FileDialog.ReadOnly
+                                       : (FileDialog.DontUseNativeDialog | FileDialog.ReadOnly)
         fileMode: FileDialog.OpenFile
         // 别一开就落在程序自己的 build 目录里，从「主文件夹」起步，
         // 用户放课表 PDF 的地方八成在下载或文档里。
         currentFolder: StandardPaths.writableLocation(StandardPaths.HomeLocation)
-        nameFilters: [qsTr("PDF 文件 (*.pdf)"), qsTr("所有文件 (*)")]
+        nameFilters: [qsTr("PDF / 图片 (*.pdf *.png *.jpg *.jpeg *.bmp *.webp)"),
+                      qsTr("所有文件 (*)")]
         onAccepted: courseImporter.importFile(selectedFile)
+    }
+
+    // 对话里传附件（PDF / 图片）给 AI。选完把当前输入框的文字一起发过去。
+    FileDialog {
+        id: chatAttachDialog
+        objectName: "chatAttachDialog"
+
+        title: qsTr("选课表或图片")
+        options: root.nativeFileDialog ? FileDialog.ReadOnly
+                                       : (FileDialog.DontUseNativeDialog | FileDialog.ReadOnly)
+        fileMode: FileDialog.OpenFiles
+        currentFolder: StandardPaths.writableLocation(StandardPaths.HomeLocation)
+        nameFilters: [qsTr("课表 (*.pdf *.png *.jpg *.jpeg *.bmp *.webp)"),
+                      qsTr("所有文件 (*)")]
+        onAccepted: {
+            // 系统文件管理器给的是 content://，先过 fileBridge 变成真能读的路径
+            const paths = fileBridge.toLocalFiles(selectedFiles)
+            if (paths.length === 0) {
+                root.showFileNote(selectedFiles.length > 0 ? selectedFiles[0] : "")
+                return
+            }
+            aiChat.send(chatInput.text, paths)
+            chatInput.text = ""
+            if (paths.length < selectedFiles.length)
+                root.showFileNote(selectedFiles[0])
+        }
     }
 
     // 只有导课失败才弹（导成了不打扰）
@@ -475,6 +563,51 @@ ApplicationWindow {
         title: qsTr("导课没成")
         text: qsTr("这份课表没解析出来")
         informativeText: courseImporter.lastError
+    }
+
+    // 选文件读不出来时的一句人话（附件 / 换背景都用它）
+    // text 是**赋值**不是绑定：QML 绑定的方法调用会被缓存住，
+    // 那样永远只会显示第一次的空值，看不到真实原因
+    MessageDialog {
+        id: fileNote
+        objectName: "fileNote"
+
+        title: qsTr("文件没读到")
+        text: qsTr("系统没把这个文件交给程序，换一个试试")
+    }
+
+    // 安卓上 Qt 自己的 FileDialog 结果回不来，走 Picker：
+    // 发系统选择器 → 选完 app 回到前台 → 这里收到路径清单
+    Connections {
+        target: fileBridge
+
+        function onFilesPicked(purpose, paths) {
+            if (purpose === "attach") {
+                aiChat.send(chatInput.text, paths)
+                chatInput.text = ""
+                return
+            }
+            cropDialog.kind = purpose
+            cropDialog.aspect = (purpose === "top") ? 1920 / 803
+                                                    : courseGrid.width / Math.max(1, courseGrid.height)
+            cropDialog.source = "file:///" + paths[0]
+            cropDialog.open()
+        }
+    }
+
+    // 选文件：安卓走系统选择器，桌面走 Qt 的对话框
+    function pickFiles(purpose, image, multiple, dialog) {
+        if (root.nativeFileDialog)
+            fileBridge.startPick(purpose, image, multiple)
+        else
+            dialog.open()
+    }
+    // 把真实原因 + 系统给过来的原始路径一起摆出来
+    function showFileNote(rawPath) {
+        const why = fileBridge.lastError
+        fileNote.text = (why && why.length > 0 ? why : qsTr("没说原因"))
+                        + qsTr("\n拿到的路径：") + (rawPath ? rawPath : qsTr("（空）"))
+        fileNote.open()
     }
 
     Connections {
@@ -565,9 +698,17 @@ ApplicationWindow {
                 Item { Layout.fillWidth: true }
 
                 Button {
+                    text: qsTr("保存")
+                    onClicked: {
+                        // 把当前服务商（混元 / DeepSeek）的 Key 显式存下来
+                        aiImporter.apiKey = apiKeyField.text
+                    }
+                }
+
+                Button {
                     text: qsTr("关闭")
                     onClicked: {
-                        // 点了就存，别指望用户先去点别处触发失焦
+                        // 关的时候也顺手存，别指望失焦触发
                         aiImporter.apiKey = apiKeyField.text
                         aiSettings.close()
                     }
@@ -612,7 +753,7 @@ ApplicationWindow {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
-                Button { text: qsTr("换一张"); onClicked: topPicker.open() }
+                Button { text: qsTr("换一张"); onClicked: root.pickFiles("top", true, false, topPicker) }
                 Button { text: qsTr("恢复默认"); onClicked: backgrounds.resetTop() }
                 Item { Layout.fillWidth: true }
             }
@@ -626,7 +767,7 @@ ApplicationWindow {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
-                Button { text: qsTr("换一张"); onClicked: tablePicker.open() }
+                Button { text: qsTr("换一张"); onClicked: root.pickFiles("table", true, false, tablePicker) }
                 Button { text: qsTr("恢复默认"); onClicked: backgrounds.resetTable() }
                 Item { Layout.fillWidth: true }
             }
@@ -645,11 +786,24 @@ ApplicationWindow {
         objectName: "topPicker"
 
         title: qsTr("选一张顶部横幅")
-        options: FileDialog.DontUseNativeDialog | FileDialog.ReadOnly
+        options: root.nativeFileDialog ? FileDialog.ReadOnly
+                                       : (FileDialog.DontUseNativeDialog | FileDialog.ReadOnly)
         fileMode: FileDialog.OpenFile
         currentFolder: StandardPaths.writableLocation(StandardPaths.PicturesLocation)
         nameFilters: [qsTr("图片 (*.png *.jpg *.jpeg *.bmp *.webp)"), qsTr("所有文件 (*)")]
-        onAccepted: backgrounds.setTop(selectedFile)
+        // 选完不直接用：先把系统给的路径（安卓上是 content://）换成真能读的
+        // 本地文件，再进裁剪层框一块
+        onAccepted: {
+            const p = fileBridge.toLocalFile(selectedFile)
+            if (p.length === 0) {
+                root.showFileNote(selectedFile)
+                return
+            }
+            cropDialog.kind = "top"
+            cropDialog.aspect = 1920 / 803 // 顶部横幅的比例，跟显示区一致
+            cropDialog.source = "file:///" + p
+            cropDialog.open()
+        }
     }
 
     FileDialog {
@@ -657,11 +811,29 @@ ApplicationWindow {
         objectName: "tablePicker"
 
         title: qsTr("选一张课表背景")
-        options: FileDialog.DontUseNativeDialog | FileDialog.ReadOnly
+        options: root.nativeFileDialog ? FileDialog.ReadOnly
+                                       : (FileDialog.DontUseNativeDialog | FileDialog.ReadOnly)
         fileMode: FileDialog.OpenFile
         currentFolder: StandardPaths.writableLocation(StandardPaths.PicturesLocation)
         nameFilters: [qsTr("图片 (*.png *.jpg *.jpeg *.bmp *.webp)"), qsTr("所有文件 (*)")]
-        onAccepted: backgrounds.setTable(selectedFile)
+        onAccepted: {
+            const p = fileBridge.toLocalFile(selectedFile)
+            if (p.length === 0) {
+                root.showFileNote(selectedFile)
+                return
+            }
+            cropDialog.kind = "table"
+            cropDialog.aspect = courseGrid.width / Math.max(1, courseGrid.height)
+            cropDialog.source = "file:///" + p
+            cropDialog.open()
+        }
+    }
+
+    // 换背景的裁剪层（背景设置里两个「换一张」都接到它）
+    CropDialog {
+        id: cropDialog
+        width: root.width
+        height: root.height
     }
 
     // 角色：AI 的性格设定，跟 WorkBuddy 那份 SOUL.md 一个意思

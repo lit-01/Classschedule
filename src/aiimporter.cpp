@@ -1,5 +1,7 @@
 #include "aiimporter.h"
 
+#include <QBuffer>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -14,50 +16,72 @@
 
 namespace {
 
-const char *const kApiBaseKey = "ai/apiBase";
-const char *const kApiKeyKey = "ai/apiKey";
-const char *const kModelKey = "ai/model";
-
 // key 从 ai/preset 换成 ai/provider：预设列表改过几回，索引容易错位，
 // 换个 key 让老存档自然失效，省得写迁移
 const char *const kPresetKey = "ai/provider";
 
-// 默认走 DeepSeek。deepseek-chat / deepseek-reasoner 这两个旧名字已经在
-// 2026-07 退役了，现在只有 flash 和 pro 两个。
-const QString kDefaultApiBase = QStringLiteral("https://api.deepseek.com");
-const QString kDefaultModel = QStringLiteral("deepseek-flash");
-
-QString buildPrompt(const QString &timetableText)
+// 每个服务商各自的默认接口地址 / 模型。deepseek-chat / deepseek-reasoner 这两个
+// 旧名字已经在 2026-07 退役了，现在只有 flash 和 pro 两个。
+QString defaultApiBase(int preset)
 {
-    return QStringLiteral(
-               "下面是一份大学课表，已经按星期几分好组了。请把它解析成 JSON 数组。\n"
-               "\n"
-               "每门课一个对象，字段如下：\n"
-               "  name          课程名（去掉 ★ ☆ ◆ ■ 这些标记）\n"
-               "  day           1=周一 … 7=周日\n"
-               "  startSection  起始小节号，照抄括号里的数字（\"(3-4节)\" 就是 3）\n"
-               "  endSection    结束小节号（\"(3-4节)\" 就是 4）\n"
-               "  weeks         整数数组，把周次全部展开成具体周。规则：\n"
-               "                  \"1-16周\"        → 1 到 16 全部\n"
-               "                  \"2-16周(双)\"    → 其中偶数周\n"
-               "                  \"1-15周(单)\"    → 其中奇数周\n"
-               "                  \"9周\"           → 只有第 9 周\n"
-               "                  \"4-8周,10-16周\" → 两段都要，中间第 9 周不要\n"
-               "  category      课程类别，只能填这四个之一：理论 / 实验 / 上机 / 实践\n"
-               "                （课表里用 ★=理论 ☆=实验 ◆=上机 ■=实践 标在课程名两头，\n"
-               "                 没有标记就留空字符串）\n"
-               "  room          场地\n"
-               "  teacher       教师\n"
-               "\n"
-               "课程名、课程类别、教师、场地这四样都不能漏。\n"
-               "只输出 JSON 数组本身，不要解释，不要 markdown 代码块。\n"
-               "示例：\n"
-               "[{\"name\":\"高等数学\",\"day\":1,\"startSection\":1,\"endSection\":2,"
-               "\"weeks\":[1,2,3],\"room\":\"博慧楼101\",\"teacher\":\"张三\","
-               "\"category\":\"理论\"}]\n"
-               "\n"
-               "课表内容：\n")
-           + timetableText;
+    return preset == AiImporter::PresetHunyuan
+        ? QStringLiteral("https://tokenhub.tencentmaas.com/v1")
+        : QStringLiteral("https://api.deepseek.com");
+}
+
+QString defaultModel(int preset)
+{
+    return preset == AiImporter::PresetHunyuan
+        ? QStringLiteral("hy4-preview")
+        : QStringLiteral("deepseek-flash");
+}
+
+// 多模态消息里的一个「文本块」
+QVariantMap textPart(const QString &text)
+{
+    QVariantMap part;
+    part.insert(QStringLiteral("type"), QStringLiteral("text"));
+    part.insert(QStringLiteral("text"), text);
+    return part;
+}
+
+QString buildPrompt(bool forImage, const QString &timetableText = QString())
+{
+    const QString head = forImage
+        ? QStringLiteral(
+              "下面是一张大学课表的图片。请直接识别里面的课程，解析成 JSON 数组。\n")
+        : QStringLiteral(
+              "下面是一份大学课表，已经按星期几分好组了。请把它解析成 JSON 数组。\n");
+
+    const QString common = QStringLiteral(
+        "\n"
+        "每门课一个对象，字段如下：\n"
+        "  name          课程名（去掉 ★ ☆ ◆ ■ 这些标记）\n"
+        "  day           1=周一 … 7=周日\n"
+        "  startSection  起始小节号，照抄括号里的数字（\"(3-4节)\" 就是 3）\n"
+        "  endSection    结束小节号（\"(3-4节)\" 就是 4）\n"
+        "  weeks         整数数组，把周次全部展开成具体周。规则：\n"
+        "                  \"1-16周\"        → 1 到 16 全部\n"
+        "                  \"2-16周(双)\"    → 其中偶数周\n"
+        "                  \"1-15周(单)\"    → 其中奇数周\n"
+        "                  \"9周\"           → 只有第 9 周\n"
+        "                  \"4-8周,10-16周\" → 两段都要，中间第 9 周不要\n"
+        "  category      课程类别，只能填这四个之一：理论 / 实验 / 上机 / 实践\n"
+        "                （课表里用 ★=理论 ☆=实验 ◆=上机 ■=实践 标在课程名两头，\n"
+        "                 没有标记就留空字符串）\n"
+        "  room          场地\n"
+        "  teacher       教师\n"
+        "\n"
+        "课程名、课程类别、教师、场地这四样都不能漏。\n"
+        "只输出 JSON 数组本身，不要解释，不要 markdown 代码块。\n"
+        "示例：\n"
+        "[{\"name\":\"高等数学\",\"day\":1,\"startSection\":1,\"endSection\":2,"
+        "\"weeks\":[1,2,3],\"room\":\"博慧楼101\",\"teacher\":\"张三\","
+        "\"category\":\"理论\"}]\n");
+
+    if (forImage)
+        return head + common;
+    return head + common + QStringLiteral("\n课表内容：\n") + timetableText;
 }
 
 // [1,2,3,5,6,7,10] → "1-3周,5-7周,10周"
@@ -95,18 +119,33 @@ AiImporter::AiImporter(QObject *parent)
     , m_net(new QNetworkAccessManager(this))
 {
     QSettings settings;
-    m_apiBase = settings.value(QLatin1String(kApiBaseKey), kDefaultApiBase).toString();
-    m_apiKey = settings.value(QLatin1String(kApiKeyKey)).toString();
-    m_model = settings.value(QLatin1String(kModelKey), kDefaultModel).toString();
     m_preset = settings.value(QLatin1String(kPresetKey), int(PresetDeepSeek)).toInt();
+
+    // 老版本把 Key 存在共用的 ai/apiKey，现在按服务商分开存。
+    // 默认服务商就是 DeepSeek，把老值搬到 ai/p1/apiKey，升级后不丢。
+    const QString legacy = settings.value(QStringLiteral("ai/apiKey")).toString();
+    if (!legacy.isEmpty()) {
+        if (settings.value(QStringLiteral("ai/p1/apiKey")).toString().isEmpty())
+            settings.setValue(QStringLiteral("ai/p1/apiKey"), legacy);
+        settings.remove(QStringLiteral("ai/apiKey"));
+    }
+
+    const QString p = keyPrefix();
+    m_apiBase = settings.value(p + QStringLiteral("apiBase"),
+                                defaultApiBase(m_preset)).toString();
+    m_apiKey = settings.value(p + QStringLiteral("apiKey")).toString();
+    m_model = settings.value(p + QStringLiteral("model"),
+                              defaultModel(m_preset)).toString();
 }
 
 void AiImporter::store()
 {
     QSettings settings;
-    settings.setValue(QLatin1String(kApiBaseKey), m_apiBase);
-    settings.setValue(QLatin1String(kApiKeyKey), m_apiKey);
-    settings.setValue(QLatin1String(kModelKey), m_model);
+    const QString p = keyPrefix();
+    settings.setValue(p + QStringLiteral("apiBase"), m_apiBase);
+    settings.setValue(p + QStringLiteral("apiKey"), m_apiKey);
+    settings.setValue(p + QStringLiteral("model"), m_model);
+    settings.setValue(QLatin1String(kPresetKey), m_preset);
 }
 
 void AiImporter::applyPreset(int index)
@@ -115,26 +154,19 @@ void AiImporter::applyPreset(int index)
         return;
 
     m_preset = index;
-    switch (index) {
-    case PresetHunyuan:
-        // 腾讯云 TokenHub 的混元接入点。Hy4 是 2026-08 发布的旗舰（770B MoE），
-        // 在混元那边的模型名就是 hy4-preview。
-        setApiBase(QStringLiteral("https://tokenhub.tencentmaas.com/v1"));
-        setModel(QStringLiteral("hy4-preview"));
-        break;
-
-    case PresetDeepSeek:
-        setApiBase(QStringLiteral("https://api.deepseek.com"));
-        setModel(QStringLiteral("deepseek-flash"));
-        break;
-
-    default:
-        break;
-    }
-
+    // 接口地址 / 模型是这家固定的默认值（界面不让人改），直接填
+    m_apiBase = defaultApiBase(index);
+    m_model = defaultModel(index);
+    // 切到这家时，把这家自己存过的 Key 读出来，别跟另一家串
     QSettings settings;
-    settings.setValue(QLatin1String(kPresetKey), m_preset);
+    m_apiKey = settings.value(keyPrefix() + QStringLiteral("apiKey")).toString();
+    store();
     emit configChanged();
+}
+
+QString AiImporter::keyPrefix() const
+{
+    return QStringLiteral("ai/p%1/").arg(m_preset);
 }
 
 void AiImporter::setApiBase(const QString &value)
@@ -167,13 +199,81 @@ void AiImporter::setModel(const QString &value)
     emit configChanged();
 }
 
+QString AiImporter::importPrompt(bool forImage)
+{
+    return buildPrompt(forImage);
+}
+
+QString AiImporter::imageToDataUrl(const QString &filePath)
+{
+    QImage img(filePath);
+    if (img.isNull())
+        return {};
+
+    // 大图先缩一下，别把几 MB 原图整个塞进请求
+    const int maxDim = 2000;
+    if (img.width() > maxDim || img.height() > maxDim)
+        img = img.scaled(maxDim, maxDim, Qt::KeepAspectRatio,
+                         Qt::SmoothTransformation);
+
+    const QString lower = filePath.toLower();
+    QString fmt = QStringLiteral("PNG");
+    QString mime = QStringLiteral("image/png");
+    if (lower.endsWith(QStringLiteral(".jpg")) || lower.endsWith(QStringLiteral(".jpeg"))) {
+        fmt = QStringLiteral("JPEG");
+        mime = QStringLiteral("image/jpeg");
+    } else if (lower.endsWith(QStringLiteral(".webp"))) {
+        fmt = QStringLiteral("WEBP");
+        mime = QStringLiteral("image/webp");
+    } else if (lower.endsWith(QStringLiteral(".bmp"))) {
+        fmt = QStringLiteral("BMP");
+        mime = QStringLiteral("image/bmp");
+    } else if (lower.endsWith(QStringLiteral(".gif"))) {
+        fmt = QStringLiteral("GIF");
+        mime = QStringLiteral("image/gif");
+    }
+
+    QByteArray ba;
+    QBuffer buf(&ba);
+    buf.open(QIODevice::WriteOnly);
+    if (!img.save(&buf, fmt.toUtf8().constData()))
+        return {};
+    return QStringLiteral("data:%1;base64,%2")
+        .arg(mime, QString::fromLatin1(ba.toBase64()));
+}
+
 void AiImporter::parse(const QString &timetableText)
 {
     if (!configured()) {
         emit failed(tr("还没配接口。点右上角那个齿轮，把接口地址和 API Key 填上。"));
         return;
     }
+    QVariantList parts;
+    parts.append(textPart(buildPrompt(false, timetableText)));
+    postParse(QJsonArray::fromVariantList(parts));
+}
 
+void AiImporter::parseImage(const QString &prompt, const QStringList &imageDataUrls)
+{
+    if (!configured()) {
+        emit failed(tr("还没配接口。点右上角那个齿轮，把接口地址和 API Key 填上。"));
+        return;
+    }
+    QVariantList parts;
+    parts.append(textPart(prompt));
+    for (const QString &url : imageDataUrls) {
+        QVariantMap img;
+        img.insert(QStringLiteral("type"), QStringLiteral("image_url"));
+        QVariantMap u;
+        u.insert(QStringLiteral("url"), url);
+        img.insert(QStringLiteral("image_url"), u);
+        parts.append(img);
+    }
+    postParse(QJsonArray::fromVariantList(parts));
+}
+
+void AiImporter::postParse(const QJsonArray &userParts)
+{
     QString base = m_apiBase;
     while (base.endsWith(QLatin1Char('/')))
         base.chop(1);
@@ -185,11 +285,10 @@ void AiImporter::parse(const QString &timetableText)
                       QStringLiteral("application/json"));
     request.setRawHeader("Authorization", "Bearer " + m_apiKey.toUtf8());
 
+    QJsonArray messages;
     QJsonObject message;
     message.insert(QStringLiteral("role"), QStringLiteral("user"));
-    message.insert(QStringLiteral("content"), buildPrompt(timetableText));
-
-    QJsonArray messages;
+    message.insert(QStringLiteral("content"), userParts);
     messages.append(message);
 
     QJsonObject body;

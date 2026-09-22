@@ -26,7 +26,13 @@
 - 卡片上显示**课程类别**（理论 / 实验 / 上机 / 实践，从课表 PDF 里那些
   ★ ☆ ◆ ■ 来的）。底色是白 / 青绿 / **樱花粉**三色轮换。
 - `IMG` 按钮（在 `+/-` 上面）能换主页那两张背景图 —— **顶部横幅**和**课表底图**，
-  各支持「换一张」和「恢复默认」。
+  各支持「换一张」和「恢复默认」。选完图会先进一个**裁剪层**：拖动选框、拉右下角圆点
+  调大小（比例锁死显示区的比例，裁下来不会变形），确认才生效。
+- **对话里能给 AI 发附件**（PDF / 图片，可多选）：PDF 本地抠文字、图片原图走视觉模型。
+- AI 知道**今天是几号、第几周、今天有哪几门课**（每次请求都随提示词带过去），
+  你告诉它开学第一周的周一，它会用 `set_first_monday` 存下来。
+- 装好后**默认是空的**：角色（人格设定）空白、课表也没有示例课 —— 想让它像个助手的样，
+  自己在「角色」里写，或者让 AI 提议一份。
 
 ## 编译
 
@@ -64,6 +70,14 @@ CMake 那边配好了、编译一路绿灯，但 `build/` 里缺 DLL 和 QML 模
 - 权限 API 漂移：Qt 6.11 里 `QCoreApplication::requestPermission` 不再是静态函数，
   改成 `QCoreApplication::instance()->requestPermission(...)`，状态判定用
   `Qt::PermissionStatus::Granted`。
+- **HTTPS 必须自带 OpenSSL**：Qt 只带 `qopensslbackend` 插件，`libcrypto_3.so` /
+  `libssl_3.so` 得自己塞进 APK，否则安卓上一切网络请求都失败（桌面走系统 Schannel，
+  所以「桌面正常、手机发不出请求」就是缺这两个库）。库可以取 KDAB 的
+  `android_openssl`（预编译），在 `CMakeLists.txt` 里用 `QT_ANDROID_EXTRA_LIBS` 带进去。
+- **文件选择器不要用 Qt 的 `FileDialog`**：安卓上它能弹出选择界面，但 `selectedFile`
+  永远是空的（结果回不来）。本项目自己实现了一份：`android/.../Picker.java` 发
+  `ACTION_OPEN_DOCUMENT`，`MainActivity.onActivityResult` 接结果，文件拷进 cache 后
+  把路径清单写 `cache/picked.txt`，Qt 侧回到前台时读取（见 `src/filebridge.*`）。
 
 ```bash
 # 用 Qt 安卓套件里的 qt-cmake，别直接用 cmake
@@ -96,19 +110,26 @@ CourseTable/
 │  ├─ pdftext.*          最小 PDF 文本提取器，不依赖 QtPdf
 │  ├─ timetableimport.*  把提取出来的文字解析成课程
 │  ├─ courseimporter.*   给 QML 调的导课入口（本地优先、AI 兜底）
-│  ├─ aiimporter.*       AI 配置（四家预设）+ 走 AI 解析课表
-│  ├─ aichat.*           AI 对话（还能直接改课表）
-│  ├─ backgrounds.*      主页背景图：顶部横幅 / 课表底图
+│  ├─ aiimporter.*       AI 配置（混元 / DeepSeek 两家）+ 走 AI 解析课表
+│  ├─ aichat.*           AI 对话（带日期/课表上下文，还能直接改课表）
+│  ├─ backgrounds.*      主页背景图：顶部横幅 / 课表底图（含裁剪落盘）
+│  ├─ filebridge.*       把选择器给的路径（安卓是 content://）变成能读的本地文件
 │  └─ soul.*             AI 性格设定（AppData/soul.md）
 ├─ qml/
 │  ├─ Main.qml           顶栏（横幅 / 周次 / 年月 / 导课 / 改课开关）
 │  ├─ CourseGrid.qml     课表网格 + 左侧节次列 + 星期表头
 │  ├─ CourseCard.qml     一格课程卡片
-│  └─ CourseEditor.qml   加课 / 改课弹窗
+│  ├─ CourseEditor.qml   加课 / 改课弹窗
+│  └─ CropDialog.qml     换背景前的裁剪层（锁显示区比例）
 ├─ assets/               横幅和表格底图（编进 qrc，`-no-compress` 原样存）
 ├─ android/              Android 打包模板
 │  ├─ AndroidManifest.xml
-│  └─ src/com/pony/coursetable/HolidayReader.java   读系统日历里的节假日
+│  ├─ res/mipmap-*/      启动器图标（自适应 + 各密度）
+│  └─ src/com/pony/coursetable/
+│     ├─ HolidayReader.java   读系统日历里的节假日
+│     ├─ FileBridge.java      content:// 的显示名 + 字节读取
+│     ├─ Picker.java          自己发的系统文件选择器（Qt 那个在安卓上拿不到结果）
+│     └─ MainActivity.java    边到边 + 转发 Picker 的 onActivityResult
 ├─ tools/                Python 辅助脚本
 └─ shots/                界面截图
 ```

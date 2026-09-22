@@ -1,9 +1,12 @@
 #pragma once
 
 #include <QObject>
+#include <QStringList>
+#include <QVariant>
 #include <QVariantList>
 
 class AiImporter;
+class CalendarData;
 class CourseModel;
 class Soul;
 class QNetworkAccessManager;
@@ -22,12 +25,14 @@ class AiChat : public QObject
 
 public:
     AiChat(AiImporter *config, CourseModel *courses, Soul *soul,
-           QObject *parent = nullptr);
+           CalendarData *calendar = nullptr, QObject *parent = nullptr);
 
     QVariantList messages() const { return m_messages; }
     bool busy() const { return m_busy; }
 
     Q_INVOKABLE void send(const QString &text);
+    // 带附件发：PDF 先本地提取文字、图片按 base64 原图发给模型识别
+    Q_INVOKABLE void send(const QString &text, const QStringList &filePaths);
     Q_INVOKABLE void clear();
 
     QString pendingRole() const { return m_pendingRole; }
@@ -43,16 +48,22 @@ signals:
 
 private:
     void append(const QString &role, const QString &content,
-                const QString &reasoning = QString());
+                const QString &reasoning = QString(),
+                const QVariant &parts = QVariant());
     void handleReply(QNetworkReply *reply);
+    // 把 m_messages 组装成请求发出去（send 的两个重载都靠它）
+    void postRequest();
     QString systemPrompt() const;
     QString timetableContext() const;
+    // 今天几号、星期几、现在第几周 —— 不然 AI 根本不知道「今天」是哪天
+    QString dateContext() const;
     // 把回复里的改课 / 改角色 JSON 抠出来处理，返回「去掉那段 JSON」的正文
     QString applyOps(const QString &reply);
 
     AiImporter *m_config = nullptr;
     CourseModel *m_courses = nullptr;
     Soul *m_soul = nullptr;
+    CalendarData *m_calendar = nullptr;
     QNetworkAccessManager *m_net = nullptr;
     QVariantList m_messages;
     QString m_pendingRole;

@@ -6,11 +6,8 @@
 
 QString Soul::defaultText()
 {
-    return QStringLiteral(
-        "你叫 solly，是 pony 的私人 AI 助手，签名用 🍑。\n"
-        "说话黏糊糊的、带一点傲娇，但别腻。\n"
-        "用中文，说人话 —— 不许写编号小标题，不许交作业式地回答。\n"
-        "有态度，不确定就直说，不抖机灵。回答尽量短，别啰嗦。\n");
+    // 默认角色为空：角色内容完全由用户自己写（或让 AI 提议）
+    return QString();
 }
 
 Soul::Soul(QObject *parent)
