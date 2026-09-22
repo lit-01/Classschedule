@@ -49,6 +49,41 @@ cmake --build build
 CMake 那边配好了、编译一路绿灯，但 `build/` 里缺 DLL 和 QML 模块，**运行到那一步才炸**。
 每次动了 `import` 就重跑一遍。
 
+## Android 打包
+
+交叉编译靠 Qt 自带的 `qt-cmake` + `androiddeployqt`，需要 **JDK 17**、**Android SDK**
+（platform / build-tools）、**NDK**：
+
+- `android/` 下是手写打包模板：`AndroidManifest.xml`（带 `READ_CALENDAR` 权限、
+  `androidx.core.content.FileProvider`）+ `src/com/pony/coursetable/HolidayReader.java`
+  （走 JNI 读系统日历的 `CalendarContract` 拿节假日 / 调休）。
+- **NDK 坑**：NDK r27c / r28 的 toolchain 最高只支持 **API 35**，`ANDROID_PLATFORM`
+  别填 `android-36`，否则 configure 直接报 `above the maximum supported version 35`。
+  Qt 6.11.2 模板 `build.gradle` 里 `androidx.core:core:1.17.0` 又要求 compileSdk ≥ 36，
+  所以把那份依赖降到 `1.13.1`（只要求 ≥ 34）就能和 API 35 和平共处。
+- 权限 API 漂移：Qt 6.11 里 `QCoreApplication::requestPermission` 不再是静态函数，
+  改成 `QCoreApplication::instance()->requestPermission(...)`，状态判定用
+  `Qt::PermissionStatus::Granted`。
+
+```bash
+# 用 Qt 安卓套件里的 qt-cmake，别直接用 cmake
+<Qt>/6.11.2/android_arm64_v8a/bin/qt-cmake.bat -S . -B build-android -G Ninja \
+  -DQT_HOST_PATH=<Qt>/6.11.2/mingw_64 \
+  -DANDROID_SDK_ROOT=<Android SDK 根目录> \
+  -DANDROID_NDK_ROOT=<Android SDK 根目录>/ndk/<版本> \
+  -DANDROID_PLATFORM=android-35
+
+cmake --build build-android
+
+<Qt>/6.11.2/mingw_64/bin/androiddeployqt.exe \
+  --input build-android/android-CourseTable-deployment-settings.json \
+  --output build-android/android-build --android-platform android-35 --gradle
+```
+
+产物在 `build-android/android-build/build/outputs/apk/`（debug 签名版可直接
+`adb install`；要分发就自己拿 keystore 签 release）。`build-android/` 已在
+`.gitignore` 里，不会进仓库。
+
 ## 目录
 
 ```
@@ -201,6 +236,7 @@ COURSETABLE_PDF_OUT=result.txt
 - **学期起始日**。课表 PDF 里只有「2026-2027学年第1学期」和打印时间，
   没说第 1 周是哪天，所以现在拿「今天所在的周一」兜底，表头日期会对不上。
   等定下规则（比如「该学年 9 月第一个周一」）再自动推。
-- **Android 打包**。`android/` 下的清单和 Java 源码是手写的，但 JDK / SDK / NDK 还没配，
-  还没出过 APK。读系统日历那段也只在 Windows 上跑过路径，真机没验证。
+- **Android 真机验证**。APK 已经能正常编出来（见上「Android 打包」），但读系统日历那段
+  只在 Windows 上跑过逻辑，没在真机上完整验证过；不同厂商日历的 `CalendarContract`
+  字段可能有差异。
 - Material 换肤、深色模式都没做。

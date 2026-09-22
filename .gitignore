@@ -2,8 +2,12 @@
 # 好几十 MB，而且都是能重新生成的，别进仓库。
 build/
 
-# 截图脚本的中间产物
-shots/_*
+# 安卓交叉编译产物（qt-cmake + androiddeployqt 在根目录生成的整套
+# android-build / .so / gradle / CMakeCache，几十 MB，可重新生成）
+build-android/
+
+# 截图是调试跑出来的，每次都变，进仓库只会让仓库越来越臃肿
+shots/
 
 # Qt Creator / clangd / VS 的本地配置
 CMakeLists.txt.user*

@@ -141,8 +141,8 @@ void CalendarData::refreshFromDeviceCalendar()
     QCalendarPermission permission;
     permission.setAccessMode(QCalendarPermission::ReadOnly);
 
-    QCoreApplication::requestPermission(permission, this, [this](const QPermission &p) {
-        if (p.status() == QPermission::Granted) {
+    QCoreApplication::instance()->requestPermission(permission, this, [this](const QPermission &p) {
+        if (p.status() == Qt::PermissionStatus::Granted) {
             readDeviceCalendar();
         } else {
             m_deviceCalendarNote = QStringLiteral("没给日历权限，节假日先用内置表顶着");
