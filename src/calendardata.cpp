@@ -80,6 +80,13 @@ void CalendarData::setFirstMonday(const QDate &date)
     emit firstMondayChanged();
 }
 
+int CalendarData::currentWeek() const
+{
+    if (!m_firstMonday.isValid())
+        return 1;
+    return qMax(1, m_firstMonday.daysTo(QDate::currentDate()) / 7 + 1);
+}
+
 QVariantMap CalendarData::dayInfo(int week, int day) const
 {
     const QDate date = m_firstMonday.addDays((week - 1) * 7 + (day - 1));

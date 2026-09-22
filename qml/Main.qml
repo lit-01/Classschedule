@@ -55,6 +55,15 @@ ApplicationWindow {
         // 手机上别锁桌面的 400×780，让它自己撑满屏幕
         if (Qt.platform.os === "android")
             root.showMaximized()
+
+        // 一进来就停在「今天所在的周」—— 不用自己从第 1 周滑过来
+        root.gotoCurrentWeek()
+    }
+
+    // 停在今天那一周（周次夹在 1..总周数 之间）
+    function gotoCurrentWeek() {
+        root.currentWeek = Math.max(1, Math.min(calendarData.currentWeek(),
+                                                root.totalWeeks))
     }
 
     onShowChatChanged: {
@@ -69,7 +78,11 @@ ApplicationWindow {
 
     Connections {
         target: calendarData
-        function onFirstMondayChanged() { root.dateRevision++ }
+        function onFirstMondayChanged() {
+            root.dateRevision++
+            // 开学日期变了，之前停的周次就不对了，重新落到本周
+            root.gotoCurrentWeek()
+        }
     }
 
     component NavButton: Rectangle {
@@ -615,8 +628,11 @@ ApplicationWindow {
 
         function onFinished(ok) {
             // 学期一共多少周，按导进来的课自动定
-            if (ok && courseImporter.lastMaxWeek > 0)
+            if (ok && courseImporter.lastMaxWeek > 0) {
                 root.totalWeeks = courseImporter.lastMaxWeek
+                // 总周数定了，重新落到今天那一周
+                root.gotoCurrentWeek()
+            }
 
             // 导成了不打扰 —— 课表变了本身就是反馈。只有没导成才需要说一句。
             if (!ok)

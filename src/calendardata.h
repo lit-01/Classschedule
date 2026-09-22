@@ -27,6 +27,10 @@ public:
     // 给人看的一句话：这次节假日是从哪来的、捞到几条
     QString deviceCalendarNote() const { return m_deviceCalendarNote; }
 
+    // 今天是第几周（按 firstMonday 算）。一进 app 就跳到这里，
+    // 省得每次都要自己从第 1 周滑过来。firstMonday 没设时返回 1
+    Q_INVOKABLE int currentWeek() const;
+
     // 一次把某格需要的日期信息都取回来（QML 一次调用就够）
     Q_INVOKABLE QVariantMap dayInfo(int week, int day) const;
 
